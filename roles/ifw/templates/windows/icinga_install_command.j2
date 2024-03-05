@@ -1,0 +1,75 @@
+{
+  "IfW-CustomZones": {
+    "Values": {{ ifw_icinga2_global_zones | tojson }}
+  },
+  {% if _icinga2_ticket is defined %}
+  "IfW-Ticket": {
+    "Values": [
+      "{{ _icinga2_ticket }}"
+    ]
+  },
+  {% endif %}
+  "IfW-GlobalZones": {
+    {# 3 -> Don't automatically add suggested global zones #}
+    "Selection": "3"
+  },
+  "IfW-InstallAgent": {
+    {# 1 -> Don't install agent. Handled elsewhere #}
+    "Selection": "1"
+  },
+  "IfW-Port": {
+    "Values": [
+      "{{ ifw_icinga2_port | default('5665') }}"
+    ]
+  },
+  "IfW-ParentNodes": {
+    "Values": {{ ifw_icinga2_parents | map(attribute='cn') | tojson }}
+  },
+  "IfW-ParentZone": {
+    "Values": [ "{{ ifw_icinga2_parent_zone }}" ]
+  },
+  "IfW-ParentAddress": {
+    "Values": {
+      {% for _parent in ifw_icinga2_parents %}
+      "{{ _parent.cn }}": [ "[{{ _parent.host | default(_parent.cn) }}]:{{ _parent.port | default('5665') }}" ]{{ ',' if (ifw_icinga2_parents | length == 2) and loop.index == 1 }}
+      {% endfor %}
+    }
+  },
+  "IfW-InstallPlugins": {
+    {# 1 -> Don't automatically install plugins #}
+    "Selection": "1"
+  },
+  "IfW-Connection": {
+    {# Connection direction -> Influences firewall rules
+       0 -> Connection from agent
+       1 -> Connection from parent
+       2 -> Connection from both sides
+    #}
+    {% if (ifw_connection_direction | lower) == 'fromagent' %}
+    "Selection": "0"
+    {% elif (ifw_connection_direction | lower) == 'fromparent' %}
+    "Selection": "1"
+    {% elif (ifw_connection_direction | lower) == 'both' %}
+    "Selection": "2"
+    {% endif %}
+  },
+  "IfW-InstallService": {
+    {# 1 -> Don't automatically install service. Handled elsewhere #}
+    "Selection": "1"
+  },
+  "IfW-Certificate": {
+    {# 1 -> Sign certificate with a ticket #}
+    "Selection": "1"
+  },
+  "IfW-CAServer": {
+    "Values": [
+      "{{ ifw_icinga2_ca_host }}"
+    ]
+  },
+  "IfW-InstallJEAProfile": {
+    "Selection": "2"
+  },
+  "IfW-Hostname": {
+    "Selection": "0"
+  }
+}

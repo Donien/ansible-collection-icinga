@@ -1,0 +1,3 @@
+---
+major_changes:
+  - Add new Ansible Role to install and manage components of Icinga For Windows

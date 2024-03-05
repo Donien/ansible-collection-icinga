@@ -1,0 +1,51 @@
+---
+
+- name: Get list of available components
+  changed_when: false
+  ansible.windows.win_shell: ConvertTo-Json -InputObject ((Get-IcingaComponentList).Components)
+  register: _available_components
+
+- name: Get list of installed components
+  changed_when: false
+  ansible.windows.win_shell: ConvertTo-Json -InputObject (Get-IcingaInstallation)
+  register: _installed_components
+
+- name: Convert available/installed components to json
+  ansible.builtin.set_fact:
+    _available_components_json: "{{ _available_components.stdout | from_json | dict2items }}"
+    _installed_components_json: "{{ _installed_components.stdout | from_json | dict2items }}"
+
+- name: Validate requested components are installable
+  loop: "{{ ifw_components }}"
+  ansible.builtin.assert:
+    that: "{{ item.name in (_available_components_json | map(attribute='key') | sort) }}"
+    fail_msg: "'{{ item.name }}' is not an installable component! (Keep component names lowercase)"
+
+- name: Remove non requested components
+  loop: "{{ _installed_components_json | map(attribute='key') | difference(['framework']) }}"
+  when: item not in (ifw_components | map(attribute='name'))
+  ansible.windows.win_shell: Uninstall-IcingaComponent -Name "{{ item }}"
+
+- name: Update existing components
+  loop: "{{ ifw_components }}"
+  vars:
+    _current_component: "{{ _installed_components_json | selectattr('key', 'eq', item.name) }}"
+    _current_version: "{{ _current_component[0].value.CurrentVersion if _current_component }}"
+    _requested_version: "{{ _current_component[0].value.LatestVersion if _current_component and (item.version | default('latest') | lower) == 'latest' else (item.version | default(omit)) }}"
+  when:
+    - _current_component
+    - _current_version != _requested_version
+  ansible.windows.win_shell: Install-IcingaComponent -Name "{{ item.name }}" -Version "{{ _requested_version }}" -Confirm
+
+- name: Install components
+  loop: "{{ ifw_components }}"
+  vars:
+    _current_component: "{{ _installed_components_json | selectattr('key', 'eq', item.name) }}"
+  when:
+    - not _current_component
+  ansible.windows.win_shell: |
+    Install-IcingaComponent -Name '{{ item.name }}' {{ ("-Version" + " '" + (item.version | default(omit)) + "'") if (item.version | default(false)) }} -Confirm -Force
+  register: _component_install_cmd
+  failed_when:
+    - _component_install_cmd.stdout is search('.*\\[Error\\].*')
+    - _component_install_cmd.stdout is not search('Component "' + item.name + '" has been installed')
