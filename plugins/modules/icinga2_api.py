@@ -13,6 +13,76 @@ import glob
 import os
 
 
+def agent_setup(module, cn, host, port, ticket, certs_directory):
+    changed = False
+    r = dict()
+
+    ### Get parent certificate
+    cmd = [
+        "icinga2",
+        "pki",
+        "save-cert",
+        "--host",
+        host,
+        "--port",
+        str(port),
+        "--trustedcert",
+        os.path.join(certs_directory, "trusted-parent.crt"),
+    ]
+    if not glob.glob(os.path.join(certs_directory, "trusted-parent.crt")):
+        r['rc'], r['stdout'], r['stderr'] = module.run_command(
+            cmd,
+            executable=None,
+            use_unsafe_shell=False,
+            encoding=None,
+            data=None,
+            binary_data=True,
+            expand_user_and_vars=True,
+        )
+        changed = True
+
+    ### Talk to master
+    # This one also makes the node receive the new certificate once it's signed
+
+    # Potential answers
+    # information/cli: Writing CA certificate to file '/var/lib/icinga2/certs/ca.crt'.
+    # information/cli: Writing signed certificate to file '/var/lib/icinga2/certs/<node_name>.crt'.
+    #   → RC X
+    #   → First connection after certificate is signed
+    #
+    # Could not fetch valid response. Please check the master log.
+    #   → RC X 
+    #   → If parent is available but does not know the own node's endpoint
+    #
+    # The certificates for CN '<node_name>' and its root CA are valid and uptodate. Skipping automated renewal.
+    #   → RC 1
+    #   → Connected normally, after getting valid certificate
+
+    cmd = [
+        "icinga2",
+        "pki",
+        "request",
+        "--host", host,
+        "--port", str(port),
+        "--trustedcert", os.path.join(certs_directory, "trusted-parent.crt"),
+        "--ca", os.path.join(certs_directory, "ca.crt"),
+        "--key", os.path.join(certs_directory, cn + ".key"),
+        "--cert", os.path.join(certs_directory, cn + ".crt"),
+    ]
+    if ticket:
+        cmd.extend(["--ticket", ticket])
+
+    r['rc'], r['stdout'], r['stderr'] = module.run_command(
+        cmd,
+        executable=None,
+        use_unsafe_shell=False,
+        encoding=None,
+        data=None,
+        binary_data=True,
+        expand_user_and_vars=True,
+    )
+
+
 def main():
     module = AnsibleModule(
         supports_check_mode=True,
@@ -38,25 +108,12 @@ def main():
     port   = module.params['port']
     ticket = module.params['ticket']
 
-    args = [
-        "icinga2",
-        "pki",
-        "save-cert",
-        "--host",
-        host,
-        "--port",
-        str(port),
-        "--trustedcert",
-        os.path.join(certs_directory, "trusted-parent.crt"),
-    ]
-
     r = dict(
         changed = True,
-        test = module.params.get('ansible_facts'),
     )
+    cmd = None
 
-
-    # Create certs/ if not present
+    ### Create certs/ if not present
     if os.path.isdir(data_directory) and not os.path.isdir(os.path.join(certs_directory)):
         stat_info = os.stat(data_directory)
         uid = stat_info.st_uid
@@ -65,12 +122,18 @@ def main():
         os.chown(certs_directory, uid, gid)
         os.chmod(certs_directory, 0o700)
 
-
-    if glob.glob(os.path.join(certs_directory, "trusted-parent.crt")):
-        r['changed'] = False
-    else:
+    ### Create private key and certificate
+    if not os.path.isfile(os.path.join(certs_directory, cn + ".key")) or not os.path.isfile(os.path.join(certs_directory, cn + ".crt")):
+        cmd = [
+            "icinga2",
+            "pki",
+            "new-cert",
+            "--cn", cn,
+            "--key", os.path.join(certs_directory, cn + ".key"),
+            "--cert", os.path.join(certs_directory, cn + ".crt"),
+        ]
         r['rc'], r['stdout'], r['stderr'] = module.run_command(
-            args,
+            cmd,
             executable=None,
             use_unsafe_shell=False,
             encoding=None,
@@ -79,57 +142,7 @@ def main():
             expand_user_and_vars=True,
         )
 
-
-    # Create cert key
-    #icinga2 pki new-cert
-    #--cn "{{ icinga2_cert_name }}"
-    #--key "{{ icinga2_cert_path }}/{{ icinga2_cert_name }}.key"
-
-    # icinga2 pki new-cert --cn "ansible-ubuntu24" --key "/var/lib/icinga2/certs/ansible-ubuntu24.key" --cert "/var/lib/icinga2/certs/ansible-ubuntu24.crt"
-
-
-
-
-
-
-    # Talk to master
-    # This one also makes the node receive the new certificate once it's signed
-
-    # Potential answers
-    # information/cli: Writing CA certificate to file '/var/lib/icinga2/certs/ca.crt'.
-    # information/cli: Writing signed certificate to file '/var/lib/icinga2/certs/<node_name>.crt'.
-    #   → RC X
-    #   → First connection after certificate is signed
-    #
-    # Could not fetch valid response. Please check the master log.
-    #   → RC X 
-    #   → If parent is available but does not know the own node's endpoint
-    #
-    # The certificates for CN '<node_name>' and its root CA are valid and uptodate. Skipping automated renewal.
-    #   → RC 1
-    #   → Connected normally, after getting valid certificate
-
-    args = [
-        "icinga2",
-        "pki",
-        "request",
-        "--host", host,
-        "--port", str(port),
-        "--trustedcert", os.path.join(certs_directory, "trusted-parent.crt"),
-        "--ca", os.path.join(certs_directory, "ca.crt"),
-        "--key", os.path.join(certs_directory, cn + ".key"),
-        "--cert", os.path.join(certs_directory, cn + ".crt"),
-    ]
-
-    r['rc'], r['stdout'], r['stderr'] = module.run_command(
-        args,
-        executable=None,
-        use_unsafe_shell=False,
-        encoding=None,
-        data=None,
-        binary_data=True,
-        expand_user_and_vars=True,
-    )
+    agent_setup(module, cn, host, port, ticket, certs_directory)
 
     # this one actually creates / pulls ca.crt
     #icinga2 pki request --host 192.168.122.113 --port 5665 --trustedcert /var/lib/icinga2/certs/trusted-parent.crt --ca /var/lib/icinga2/certs/ca.crt --key /var/lib/icinga2/certs/ansible-ubuntu24.key --cert /var/lib/icinga2/certs/ansible-ubuntu24.crt
@@ -148,7 +161,7 @@ def main():
 
     module.exit_json(
         **r,
-        args=args,
+        cmd=cmd,
     )
 
 
