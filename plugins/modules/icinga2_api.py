@@ -15,6 +15,43 @@ import os
 import re
 
 
+def get_fingerprint(module, path):
+    fingerprint_pattern = r'Fingerprint:\s*(.*)$'
+    if os.path.isfile(path):
+        cmd = [
+            'icinga2',
+            'pki',
+            'verify',
+            '--cert', path,
+        ]
+        rc, stdout, stderr = module.run_command(
+            cmd,
+            executable=None,
+            use_unsafe_shell=False,
+            encoding=None,
+            data=None,
+            binary_data=True,
+            expand_user_and_vars=True,
+        )
+        match = re.search(fingerprint_pattern, str(stdout).strip('"'))
+        if match:
+            # Normalize fingerprint
+            fingerprint = match.group(1).replace('\\n', '').replace(' ', '').lower()
+            return fingerprint
+        return None
+
+
+def get_return_values(module, cn, ca_directory, certs_directory):
+    ### Get CA and certificate fingerprints
+    rv = dict(
+        ca_fingerprint = None,
+        cert_fingerprint = None,
+    )
+    rv['ca_fingerprint'] = get_fingerprint(module, os.path.join(ca_directory, 'ca.crt'))
+    rv['cert_fingerprint'] = get_fingerprint(module, os.path.join(certs_directory, cn + '.crt'))
+    return rv
+
+
 def configure(module, cn, zones, sysconf_directory):
     ret = dict(
         changed = False,
@@ -134,7 +171,7 @@ def master_setup(module, cn, ca_directory, certs_directory):
     return ret
 
 
-def agent_setup(module, cn, host, port, ticket, certs_directory):
+def agent_setup(module, cn, host, port, ticket, fingerprint, ignore_fingerprint, certs_directory):
     ret = dict(
         changed = False,
     )
@@ -194,15 +231,23 @@ def agent_setup(module, cn, host, port, ticket, certs_directory):
     if ticket:
         cmd.extend(['--ticket', ticket])
 
-    #rc, stdout, stderr = module.run_command(
-    #    cmd,
-    #    executable=None,
-    #    use_unsafe_shell=False,
-    #    encoding=None,
-    #    data=None,
-    #    binary_data=True,
-    #    expand_user_and_vars=True,
-    #)
+    rc, stdout, stderr = module.run_command(
+        cmd,
+        executable=None,
+        use_unsafe_shell=False,
+        encoding=None,
+        data=None,
+        binary_data=True,
+        expand_user_and_vars=True,
+    )
+
+    # Validate fingerprint
+    present_fingerprint = get_fingerprint(module, os.path.join(certs_directory, 'ca.crt'))
+    if not ignore_fingerprint and fingerprint != present_fingerprint:
+        ret['fail_msg'] = 'Fingerprint \'{}\' on host did not match provided fingerprint \'{}\'.'.format(
+            present_fingerprint,
+            fingerprint,
+        )
 
     return ret
 
@@ -239,8 +284,8 @@ def main():
 
 
             # Use that to verify
-            finger_print=dict(type='str'),
-            ignore_finger_print=dict(default=False, type='bool'),
+            fingerprint=dict(type='str'),
+            ignore_fingerprint=dict(default=False, type='bool'),
         )
     )
 
@@ -254,9 +299,11 @@ def main():
     zones = module.params['zones']
 
     if mode == 'agent':
-        host   = module.params['host']
-        port   = module.params['port']
-        ticket = module.params['ticket']
+        host               = module.params['host']
+        port               = module.params['port']
+        ticket             = module.params['ticket']
+        fingerprint        = module.params['fingerprint']
+        ignore_fingerprint = module.params['ignore_fingerprint']
 
     ret = dict(
         changed = False,
@@ -298,13 +345,15 @@ def main():
     config_ret = dict()
 
     if mode == 'agent':
-        mode_ret = agent_setup(module, cn, host, port, ticket, certs_directory)
+        mode_ret = agent_setup(module, cn, host, port, ticket, fingerprint, ignore_fingerprint, certs_directory)
     elif mode == 'master':
         mode_ret = master_setup(module, cn, ca_directory, certs_directory)
 
     config_ret = configure(module, cn, zones, sysconf_directory)
     module.warn("config ret " + str(config_ret))
 
+    ### Collect information for return values
+    ret.update(get_return_values(module, cn, ca_directory, certs_directory))
 
     # this one actually creates / pulls ca.crt
     #icinga2 pki request --host 192.168.122.113 --port 5665 --trustedcert /var/lib/icinga2/certs/trusted-parent.crt --ca /var/lib/icinga2/certs/ca.crt --key /var/lib/icinga2/certs/ansible-ubuntu24.key --cert /var/lib/icinga2/certs/ansible-ubuntu24.crt
