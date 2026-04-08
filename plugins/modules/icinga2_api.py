@@ -9,10 +9,34 @@ EXAMPLES = r'''
 RETURN = r'''
 '''
 
+import filecmp
 import shutil
+import socket
 import glob
 import os
 import re
+
+
+def verify_cert(module, ca_path, cert_path):
+    cmd = [
+        'icinga2',
+        'pki',
+        'verify',
+        '--cacert', ca_path,
+        '--cert', cert_path,
+    ]
+    rc, stdout, stderr = module.run_command(
+        cmd,
+        executable=None,
+        use_unsafe_shell=False,
+        encoding=None,
+        data=None,
+        binary_data=True,
+        expand_user_and_vars=True,
+    )
+    if rc != 0:
+        return False
+    return True
 
 
 def get_fingerprint(module, path):
@@ -83,9 +107,13 @@ def configure(module, cn, zones, sysconf_directory):
     with open(os.path.join(sysconf_directory, 'constants.conf'), 'w') as constants:
         constants.writelines(new_lines)
 
-    
+
     ### Define zones.conf
     zones_conf = list()
+
+    # Don't change zones.conf if not asked
+    if not zones:
+        return ret
 
     for zone in zones:
         if zone['_global']:
@@ -127,9 +155,9 @@ def configure(module, cn, zones, sysconf_directory):
             ret['changed'] = True
 
     return ret
-    
 
-def master_setup(module, cn, ca_directory, certs_directory):
+
+def master_setup(module, cn, ca_directory, certs_directory, force_new_ca=False):
     ret = dict(
         changed = False,
     )
@@ -140,6 +168,11 @@ def master_setup(module, cn, ca_directory, certs_directory):
         'pki',
         'new-ca',
     ]
+
+    if force_new_ca:
+        os.remove(os.path.join(ca_directory, 'ca.key'))
+        os.remove(os.path.join(ca_directory, 'ca.crt'))
+        os.remove(os.path.join(certs_directory, 'ca.crt'))
 
     if not glob.glob(os.path.join(ca_directory, 'ca.key')):
         rc, stdout, stderr = module.run_command(
@@ -162,34 +195,24 @@ def master_setup(module, cn, ca_directory, certs_directory):
                 os.path.join(ca_directory, 'ca.crt')
             )
         )
-    else:
+
+    # Ensure '/var/lib/icinga2/certs/ca.crt' is up to date since this will be returned upon an agent's request (pki request)
+    if not glob.glob(os.path.join(certs_directory, 'ca.crt')) or not filecmp.cmp(os.path.join(ca_directory, 'ca.crt'), os.path.join(certs_directory, 'ca.crt')):
         shutil.copy(
             os.path.join(ca_directory, 'ca.crt'),
             os.path.join(certs_directory, 'ca.crt')
         )
 
-    return ret
-
-
-def agent_setup(module, cn, host, port, ticket, fingerprint, ignore_fingerprint, certs_directory):
-    ret = dict(
-        changed = False,
-    )
-
-    ### Get parent certificate
-    cmd = [
-        'icinga2',
-        'pki',
-        'save-cert',
-        '--host',
-        host,
-        '--port',
-        str(port),
-        '--trustedcert',
-        os.path.join(certs_directory, 'trusted-parent.crt'),
-    ]
-    if not glob.glob(os.path.join(certs_directory, 'trusted-parent.crt')):
-        rc, stdout, stderr= module.run_command(
+    # Sign own CSR
+    if not verify_cert(module, os.path.join(ca_directory, 'ca.crt'), os.path.join(certs_directory, cn + '.crt')):
+        cmd = [
+            'icinga2',
+            'pki',
+            'sign-csr',
+            '--csr', os.path.join(certs_directory, cn + '.csr'),
+            '--cert', os.path.join(certs_directory, cn + '.crt'),
+        ]
+        rc, stdout, stderr = module.run_command(
             cmd,
             executable=None,
             use_unsafe_shell=False,
@@ -199,6 +222,39 @@ def agent_setup(module, cn, host, port, ticket, fingerprint, ignore_fingerprint,
             expand_user_and_vars=True,
         )
         ret['changed'] = True
+
+    return ret
+
+
+def agent_setup(module, cn, host, port, ticket, fingerprint, ignore_fingerprint, certs_directory, force_new_cert=False):
+    ret = dict(
+        changed = False,
+    )
+
+    ### Get parent certificate
+    cmd = [
+        'icinga2',
+        'pki',
+        'save-cert',
+        '--host', host,
+        '--port', str(port),
+        '--trustedcert', os.path.join(certs_directory, 'trusted-parent.crt'),
+    ]
+    if force_new_cert or not glob.glob(os.path.join(certs_directory, 'trusted-parent.crt')):
+        rc, stdout, stderr= module.run_command(
+            cmd,
+            executable=None,
+            use_unsafe_shell=False,
+            encoding=None,
+            data=None,
+            binary_data=True,
+            expand_user_and_vars=True,
+        )
+        if 'Failed to fetch certificate from host.' in str(stdout):
+            ret['fail_msg'] = stdout.decode().strip()
+            return ret
+        ret['changed'] = True
+
 
     ### Talk to master
     # This one also makes the node receive the new certificate once it's signed
@@ -231,20 +287,26 @@ def agent_setup(module, cn, host, port, ticket, fingerprint, ignore_fingerprint,
     if ticket:
         cmd.extend(['--ticket', ticket])
 
-    rc, stdout, stderr = module.run_command(
-        cmd,
-        executable=None,
-        use_unsafe_shell=False,
-        encoding=None,
-        data=None,
-        binary_data=True,
-        expand_user_and_vars=True,
-    )
+    # Make new request only if own cert not valid
+    if not verify_cert(module, os.path.join(certs_directory, 'ca.crt'), os.path.join(certs_directory, cn + '.crt')):
+        rc, stdout, stderr = module.run_command(
+            cmd,
+            executable=None,
+            use_unsafe_shell=False,
+            encoding=None,
+            data=None,
+            binary_data=True,
+            expand_user_and_vars=True,
+        )
+        ret['changed'] = True
+
+    # WIP: Trusted parent cert could be wrong at this point because parent might have forcefully created a new cert
+    # critical/cli: Peer certificate does not match trusted certificate.
 
     # Validate fingerprint
     present_fingerprint = get_fingerprint(module, os.path.join(certs_directory, 'ca.crt'))
     if not ignore_fingerprint and fingerprint != present_fingerprint:
-        ret['fail_msg'] = 'Fingerprint \'{}\' on host did not match provided fingerprint \'{}\'.'.format(
+        ret['fail_msg'] = 'CA fingerprint \'{}\' on host did not match provided fingerprint \'{}\'.'.format(
             present_fingerprint,
             fingerprint,
         )
@@ -258,12 +320,13 @@ def main():
         argument_spec=dict(
             state=dict(default='present', choices=['present', 'absent'], type='str'),
             mode=dict(default='agent', choices=['agent', 'master', 'config'], type='str'),
-            cn=dict(required=True, type='str'),
+            cn=dict(default=socket.getfqdn(), type='str'),
             host=dict(default=None, type='str'),
             port=dict(default=5665, type='int'),
             ticket=dict(default=None, type='str', no_log=True),
 
             zones=dict(
+                default=list(),
                 type='list',
                 elements='dict',
                 options=dict(
@@ -282,8 +345,11 @@ def main():
                 ),
             ),
 
+            force_new_ca=dict(default=False, type='bool'),
+            force_new_cert=dict(default=False, type='bool'),
 
             # Use that to verify
+            # fingerprint of the CA
             fingerprint=dict(type='str'),
             ignore_fingerprint=dict(default=False, type='bool'),
         )
@@ -294,9 +360,11 @@ def main():
     ca_directory      = os.path.join(data_directory, 'ca')
     certs_directory   = os.path.join(data_directory, 'certs')
 
-    mode  = module.params['mode']
-    cn    = module.params['cn']
-    zones = module.params['zones']
+    mode           = module.params['mode']
+    cn             = module.params['cn']
+    zones          = module.params['zones']
+    force_new_ca   = module.params['force_new_ca']
+    force_new_cert = module.params['force_new_cert']
 
     if mode == 'agent':
         host               = module.params['host']
@@ -320,7 +388,7 @@ def main():
         ret['changed'] = True
 
     ### Create private key and certificate
-    if not os.path.isfile(os.path.join(certs_directory, cn + '.key')) or not os.path.isfile(os.path.join(certs_directory, cn + '.crt')):
+    if force_new_cert or any(not os.path.isfile(os.path.join(certs_directory, file)) for file in [cn + '.key', cn + '.crt', cn + '.csr']):
         cmd = [
             'icinga2',
             'pki',
@@ -328,6 +396,7 @@ def main():
             '--cn', cn,
             '--key', os.path.join(certs_directory, cn + '.key'),
             '--cert', os.path.join(certs_directory, cn + '.crt'),
+            '--csr', os.path.join(certs_directory, cn + '.csr'),
         ]
         rc, stdout, stderr = module.run_command(
             cmd,
@@ -345,9 +414,9 @@ def main():
     config_ret = dict()
 
     if mode == 'agent':
-        mode_ret = agent_setup(module, cn, host, port, ticket, fingerprint, ignore_fingerprint, certs_directory)
+        mode_ret = agent_setup(module, cn, host, port, ticket, fingerprint, ignore_fingerprint, certs_directory, force_new_cert)
     elif mode == 'master':
-        mode_ret = master_setup(module, cn, ca_directory, certs_directory)
+        mode_ret = master_setup(module, cn, ca_directory, certs_directory, force_new_ca)
 
     config_ret = configure(module, cn, zones, sysconf_directory)
     module.warn("config ret " + str(config_ret))
