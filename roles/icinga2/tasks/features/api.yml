@@ -3,11 +3,11 @@
 - name: Set api feature facts
   ansible.builtin.set_fact:
     icinga2_cert_name: "{{ icinga2_dict_features.api.cert_name | default(ansible_facts['fqdn']) }}"
-    icinga2_ca_host: "{{ icinga2_dict_features.api.ca_host | default(omit) }}"
-    icinga2_ca_host_port: "{{ icinga2_dict_features.api.ca_host_port | default(omit) }}"
-    icinga2_ca_fingerprint: "{{ icinga2_dict_features.api.ca_fingerprint | default(omit) }}"
+    icinga2_parent_host: "{{ icinga2_dict_features.api.parent_host | default(icinga2_dict_features.api.ca_host) | default(omit) }}"
+    icinga2_parent_port: "{{ icinga2_dict_features.api.parent_port | default(icinga2_dict_features.api.ca_host_port) | default(omit) }}"
+    icinga2_parent_fingerprint: "{{ icinga2_dict_features.api.parent_fingerprint | default(icinga2_dict_features.api.ca_fingerprint) | default(omit) }}"
     icinga2_force_newca: "{{ icinga2_dict_features.api.force_newca | default(false) }}"
-    icinga2_force_newcert: "{{ icinga2_dict_features.api.force_newcert | default(false) }}"
+    icinga2_force_newcert: "{{ icinga2_dict_features.api.force_newcert | default(False) }}"
     icinga2_endpoints: "{{ icinga2_dict_features.api.endpoints |default([]) }}"
     icinga2_zones: "{{ icinga2_dict_features.api.zones | default([]) }}"
     icinga2_ssl_cert: "{{ icinga2_dict_features.api.ssl_cert | default(omit) }}"
@@ -20,14 +20,14 @@
 
 - name: Check if necessary variables are defined
   ansible.builtin.assert:
-    that: ((icinga2_ssl_cacert is defined and icinga2_ssl_cert is defined and icinga2_ssl_key is defined) or (icinga2_ssl_cacert is undefined and icinga2_ssl_cert is undefined and icinga2_ssl_key is undefined and icinga2_ca_host is defined))
+    that: ((icinga2_ssl_cacert is defined and icinga2_ssl_cert is defined and icinga2_ssl_key is defined) or (icinga2_ssl_cacert is undefined and icinga2_ssl_cert is undefined and icinga2_ssl_key is undefined and icinga2_parent_host is defined))
     fail_msg: ca_host is mandatory or ssl_cacert/cert/key have to be set at the same time
     success_msg: API Feature is configured correctly
 
 - name: Api feature cleanup arguments list
   ansible.builtin.set_fact:
     icinga2_api_listener_args: "{{ icinga2_api_listener_args | default({}) | combine({idx.key: idx.value}) }}"
-  when: idx.key not in ['ca_host', 'ca_host_port', 'cert_name', 'ca_fingerprint', 'force_newca', 'force_newcert', 'zones', 'endpoints', 'ssl_cacert', 'ssl_key', 'ssl_cert', 'ssl_remote_source', 'ticket_salt', 'ticket', 'delegate_pki' ]
+  when: idx.key not in ['ca_host', 'parent_host', 'ca_host_port', 'parent_port', 'cert_name', 'ca_fingerprint', 'parent_fingerprint', 'force_newcert', 'zones', 'endpoints', 'ssl_cacert', 'ssl_key', 'ssl_cert', 'ssl_remote_source', 'ticket_salt', 'ticket', 'delegate_pki' ]
   loop: "{{ icinga2_dict_features.api | dict2items }}"
   loop_control:
     loop_var: idx
@@ -67,7 +67,7 @@
   register: result
 
 - name: Set up master instance
-  when: icinga2_ca_host is defined and icinga2_ca_host == 'none'
+  when: icinga2_parent_host is defined and icinga2_parent_host == 'none'
   netways.icinga.icinga2_api:
     mode: master
     cn: "{{ icinga2_config_host }}"
@@ -97,14 +97,14 @@
     - name: Normalize ca fingerprint
       when: icinga2_ca_fingerprint is defined
       ansible.builtin.set_fact:
-        _ca_fingerprint_normalized: "{{ icinga2_ca_fingerprint | upper | replace(':', ' ') }}"
+        _parent_fingerprint_normalized: "{{ icinga2_parent_fingerprint | lower | replace(':', '') }}"
 
     - name: Delegate ticket request to master
       no_log: "{{ icinga2_no_log | default(icinga_no_log) | default(true) }}"
-      delegate_to: "{{ icinga2_delegate_host | default(icinga2_ca_host) }}"
+      delegate_to: "{{ icinga2_delegate_host | default(icinga2_parent_host) }}"
       ignore_unreachable: true
       when:
-        - icinga2_ca_host != 'none'
+        - icinga2_parent_host != 'none'
         - icinga2_ticket is not defined
       ansible.builtin.command: >
         icinga2 pki ticket
@@ -115,14 +115,14 @@
       register: _icinga2_ticket
 
     - name: Set up agent / satellite
-      when: icinga2_ca_host != 'none'
+      when: icinga2_parent_host != 'none'
       netways.icinga.icinga2_api:
         mode: agent
         cn: "{{ icinga2_config_host }}"
-        host: "{{ icinga2_ca_host }}"
-        port: "{{ icinga2_ca_port | default(omit) }}"
-        fingerprint: "{{ _ca_fingerprint_normalized | default(omit) }}"
-        ignore_fingerprint: "{{ _ca_fingerprint_normalized | default(false) | ternary(false, true) }}"
+        host: "{{ icinga2_parent_host }}"
+        port: "{{ icinga2_parent_port | default(omit) }}"
+        fingerprint: "{{ _parent_fingerprint_normalized | default(omit) }}"
+        ignore_fingerprint: "{{ _parent_fingerprint_normalized | default(false) | ternary(false, true) }}"
         ticket: "{{ icinga2_ticket | default(_icinga2_ticket.stdout) | default(omit) }}"
         force_new_cert: "{{ icinga2_force_newcert }}"
 
