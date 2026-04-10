@@ -71,6 +71,7 @@
   netways.icinga.icinga2_api:
     mode: master
     cn: "{{ icinga2_config_host }}"
+    enable_feature: false
     force_new_ca: "{{ icinga2_force_newca }}"
     force_new_cert: "{{ icinga2_force_newcert }}"
 
@@ -121,6 +122,7 @@
         cn: "{{ icinga2_config_host }}"
         host: "{{ icinga2_parent_host }}"
         port: "{{ icinga2_parent_port | default(omit) }}"
+        enable_feature: false
         fingerprint: "{{ _parent_fingerprint_normalized | default(omit) }}"
         ignore_fingerprint: "{{ _parent_fingerprint_normalized | default(false) | ternary(false, true) }}"
         ticket: "{{ icinga2_ticket | default(_icinga2_ticket.stdout) | default(omit) }}"
