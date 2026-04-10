@@ -1,12 +1,240 @@
 from ansible.module_utils.basic import AnsibleModule
 
-DOCUMENTATION = '''
+DOCUMENTATION = r'''
+module: icinga2_api
+short_description: Handles Icinga 2 API setup.
+description:
+  - Sets host up for communication with other Icinga 2 nodes.
+  - Initiates an Icinga 2 master / satellite / agent setup.
+  - Ensures correct C(NodeName) constant.
+  - Manages C(zones.conf).
+  - Does not manage the C(ApiListener) object / C(api) feature.
+version_added: WIP
+author: |
+  Matthias Döhler <matthias.doehler@netways.de>
+options:
+  mode:
+    description:
+      - Defines the configuration mode to run.
+      - O(mode=master) will set the host up as a master instance.
+        This will create a local CA and the certificate for the host itself.
+      - O(mode=agent) (and its alias O(mode=satellite)) will set the host up as an agent instance.
+        This will create a certificate and key for the host,
+        fetch the parent's certificate,
+        and make a certificate request to that parent.
+      - The configuration steps, like setting the C(NodeName), always happen.
+         If O(mode=config) the master / agent setup is skipped, saving a little time if already done previously.
+    type: str
+    default: agent
+    choices:
+      - agent
+      - satellite
+      - master
+      - config
+  cn:
+    description:
+      - Defines the common name (CN) of the host.
+        This name will be used to distinctly represent this host within the cluster.
+        The O(cn) will be written to C(constants.conf) and used in this host's certificate.
+      - If unspecified, the host's FQDN will be used as given by V(socket.getfqdn(\)).
+    type: str
+  host:
+    description:
+      - If O(mode=agent), V(host) will be used to fetch the parent's certificate and for certificate requests.
+        Used in combination with O(port).
+      - Required when O(mode=agent).
+    type: str
+    aliases:
+      - parent_host
+  port:
+    description:
+      - If O(mode=agent), V(port) will be used to fetch the parent's certificate and for certificate requests.
+        Used in combination with O(host).
+    default: 5665
+    type: int
+    aliases:
+      - parent_port
+  ticket:
+    description:
+      - Used for CSR auto signing. If unspecified, a request is made to the O(parent) without a valid ticket, leading to on-demand CSR signing.
+        With each execution of this module, new requests will be made until the host's CSR has been signed.
+      - |
+        The ticket for any C(CN) can be computed using the C(TicketSalt) secret found on the Icinga 2 master,
+        passing both values to P(netways.icinga.icinga2_ticket#filter).
+        Example: V(ticket: "{{ 'myCommonName' | netways.icinga.icinga2_ticket(ticketsalt='mySuperSecretTicketSalt'\) }}")
+    type: str
+  enable_feature:
+    description:
+      - Whether the C(api) feature should be enabled.
+      - This does not configure the C(ApiListener) object found in the C(api) feature, but merely enables it.
+        If you need to configure the feature, you can use P(netways.icinga.icinga2#role) to do so
+        or use other modules like M(ansible.builtin.template) to generate a configuration according to your needs.
+    default: true
+    type: bool
+  zones:
+    description:
+      - Defines C(zones.conf).
+        If left empty, C(zones.conf) will stay untouched.
+    default: []
+    type: list
+    elements: dict
+    suboptions:
+      name:
+        description:
+          - Defines the name of the zone.
+        type: str
+      global:
+        description:
+          - Whether the zone is a global zone.
+        default: false
+        type: bool
+        aliases:
+          - _global
+      parent:
+        description:
+          - Defines the parent zone of O(zones[].name).
+        type: str
+      endpoints:
+        description:
+          - Defines the Icinga 2 endpoint objects.
+        type: list
+        elements: dict
+        suboptions:
+          cn:
+            description:
+              - Defines the endpoint object's name.
+            type: str
+            aliases:
+              - name
+          host:
+            description:
+              - Defines the endpoint object's C(host) attribute.
+            type: str
+          port:
+            description:
+              - Defines the endpoint object's C(port) attribute.
+            type: int
+  force_new_ca:
+    description:
+      - If O(mode=master) and O(force_new_ca=true), enforces the recreation of the CA certificate and key.
+    default: false
+    type: bool
+  force_new_cert:
+    description:
+      - If O(mode=master) or O(mode=agent), and O(force_new_cert=true), enforces the recreation of the host's certificate and key.
+    default: false
+    type: bool
+  fingerprint:
+    description:
+      - The fingerprint of the CA's certificate. This is used for validation.
+    type: str
+  ignore_fingerprint:
+    description:
+      - If O(ignore_fingerprint=true), no validation using the O(fingerprint) takes place.
+    default: false
+    type: bool
+
+requirements:
+    - icinga2
+
+seealso:
+    - name: Icinga 2 distributed monitoring
+      description: Official documentation about distributed monitoring with Icinga 2.
+      link: https://icinga.com/docs/icinga-2/latest/doc/06-distributed-monitoring/
 '''
 
 EXAMPLES = r'''
+- name: Agent setup using on-demand signing
+  netways.icinga.icinga2_api:
+    mode: agent
+    cn: "agent.example.com"
+    host: "master.example.com"
+    fingerprint: "fb7ebd67bb1b69eba4edec1204683b636d17b7393dad84f8c8ee66c5a1ad84ba"
+    zones:
+      # Define parent zone and connection details
+      - name: "master"
+        endpoints:
+          - cn: "master.example.com"
+            host: "10.0.0.30"
+      # Define own zone
+      - name: "agent.example.com"
+        parent: "master"
+        endpoints:
+          - cn: "agent.example.com"
+
+
+- name: Satellite setup using a ticket
+  netways.icinga.icinga2_api:
+    mode: agent
+    cn: "satellite.example.com"
+    host: "master.example.com"
+    ticket: "{{ 'satellite.example.com' | netways.icinga.icinga2_ticket(ticketsalt='mySecretTicketSalt') }}"
+    fingerprint: "fb7ebd67bb1b69eba4edec1204683b636d17b7393dad84f8c8ee66c5a1ad84ba"
+    zones:
+      # Define parent zone and connection details
+      - name: "master"
+        endpoints:
+          - cn: "master.example.com"
+            host: "10.0.0.30"
+      # Define own satellite zone called 'satellite'
+      - name: "satellite"
+        parent: "master"
+        endpoints:
+          - cn: "satellite.example.com"
+      # Global zones as needed
+      - name: "global-templates"
+        global: true
+      - name: "director-global"
+        global: true
+
+
+- name: Master setup defining multiple satellite zones and global zones
+  netways.icinga.icinga2_api:
+    mode: master
+    cn: "master.example.com"
+    zones:
+      # Define master zone
+      - name: "master"
+        endpoints:
+          - cn: "master.example.com"
+      # Define first satellite zone called 'us'
+      - name: "us"
+        parent: "master"
+        endpoints:
+          - cn: "us-satellite.example.com"
+            host: "us-satellite.example.com"
+      # Define second satellite zone called 'de'
+      - name: "de"
+        parent: "master"
+        endpoints:
+          - cn: "de-satellite.example.com"
+            host: "de-satellite.example.com"
+      # Global zones
+      - name: "global-templates"
+        global: true
+      - name: "director-global"
+        global: true
 '''
 
 RETURN = r'''
+cn:
+  description:
+    - The common name used.
+  type: str
+  returned: always
+  sample: example.com
+ca_fingerprint:
+  description:
+    - The sha256 fingerprint of the C(ca.crt).
+  type: str
+  returned: always
+  sample: fb7ebd67bb1b69eba4edec1204683b636d17b7393dad84f8c8ee66c5a1ad84ba
+cert_fingerprint:
+  description:
+    - The sha256 fingerprint of this host's certificate.
+  type: str
+  returned: always
+  sample: 53f33316caacd4342a12c130e5fa6d7a619565bd730ac58ef98f8b38a7e03e37
 '''
 
 import filecmp
@@ -68,15 +296,16 @@ def get_fingerprint(module, path):
 def get_return_values(module, cn, ca_directory, certs_directory):
     ### Get CA and certificate fingerprints
     rv = dict(
+        cn = cn,
         ca_fingerprint = None,
         cert_fingerprint = None,
     )
-    rv['ca_fingerprint'] = get_fingerprint(module, os.path.join(ca_directory, 'ca.crt'))
+    rv['ca_fingerprint'] = get_fingerprint(module, os.path.join(certs_directory, 'ca.crt'))
     rv['cert_fingerprint'] = get_fingerprint(module, os.path.join(certs_directory, cn + '.crt'))
     return rv
 
 
-def configure(module, cn, zones, sysconf_directory):
+def configure(module, cn, zones, enable_feature, sysconf_directory):
     ret = dict(
         changed = False,
     )
@@ -116,6 +345,11 @@ def configure(module, cn, zones, sysconf_directory):
         return ret
 
     for zone in zones:
+        # Validate zone is either global or contains endpoints
+        if zone['_global'] and zone['endpoints']:
+            ret['fail_msg'] = 'Zone \'{}\' cannot be global and contain endpoints.'.format(zone['name'])
+            break
+
         if zone['_global']:
             zones_conf.append('object Zone "{}" {{'.format(zone['name']))
             zones_conf.append('  global = true')
@@ -153,6 +387,28 @@ def configure(module, cn, zones, sysconf_directory):
         with open(os.path.join(sysconf_directory, 'zones.conf'), 'w') as zones_file:
             zones_file.write(new_zones)
             ret['changed'] = True
+
+    # Enable feature
+    if enable_feature:
+        cmd = [
+            'icinga2',
+            'feature',
+            'enable',
+            'api',
+        ]
+        rc, stdout, stderr = module.run_command(
+            cmd,
+            executable=None,
+            use_unsafe_shell=False,
+            encoding=None,
+            data=None,
+            binary_data=True,
+            expand_user_and_vars=True,
+        )
+        if 'Enabling feature api.' in stdout.decode():
+            ret['changed'] = True
+        elif rc != 0:
+            ret['fail_msg'] = stdout.decode().strip()
 
     return ret
 
@@ -319,12 +575,12 @@ def main():
         supports_check_mode=True,
         argument_spec=dict(
             state=dict(default='present', choices=['present', 'absent'], type='str'),
-            mode=dict(default='agent', choices=['agent', 'master', 'config'], type='str'),
-            cn=dict(default=socket.getfqdn(), type='str'),
-            host=dict(default=None, type='str'),
-            port=dict(default=5665, type='int'),
+            mode=dict(default='agent', choices=['agent', 'satellite', 'master', 'config'], type='str'),
+            cn=dict(type='str'),
+            host=dict(default=None, type='str', aliases=['parent_host']),
+            port=dict(default=5665, type='int', aliases=['parent_port']),
             ticket=dict(default=None, type='str', no_log=True),
-
+            enable_feature=dict(default=True, type='bool'),
             zones=dict(
                 default=list(),
                 type='list',
@@ -340,19 +596,23 @@ def main():
                             cn=dict(required=True, type='str', aliases=['name']),
                             host=dict(default=None, type='str'),
                             port=dict(default=None, type='int'),
-                        )
+                        ),
                     ),
                 ),
+                required_if=[
+                    ['global', False, ['endpoints'], False],
+                    ['_global', False, ['endpoints'], False],
+                ],
             ),
-
             force_new_ca=dict(default=False, type='bool'),
             force_new_cert=dict(default=False, type='bool'),
-
-            # Use that to verify
-            # fingerprint of the CA
             fingerprint=dict(type='str'),
             ignore_fingerprint=dict(default=False, type='bool'),
-        )
+        ),
+        required_if=[
+            ['mode', 'agent', ['host'], False],
+            ['mode', 'satellite', ['host'], False],
+        ]
     )
 
     sysconf_directory = '/etc/icinga2'
@@ -360,11 +620,15 @@ def main():
     ca_directory      = os.path.join(data_directory, 'ca')
     certs_directory   = os.path.join(data_directory, 'certs')
 
-    mode           = module.params['mode']
     cn             = module.params['cn']
+    mode           = module.params['mode']
     zones          = module.params['zones']
     force_new_ca   = module.params['force_new_ca']
     force_new_cert = module.params['force_new_cert']
+    enable_feature = module.params['enable_feature']
+
+    if not cn:
+        cn = socket.getfqdn()
 
     if mode == 'agent':
         host               = module.params['host']
@@ -418,7 +682,7 @@ def main():
     elif mode == 'master':
         mode_ret = master_setup(module, cn, ca_directory, certs_directory, force_new_ca)
 
-    config_ret = configure(module, cn, zones, sysconf_directory)
+    config_ret = configure(module, cn, zones, enable_feature, sysconf_directory)
     module.warn("config ret " + str(config_ret))
 
     ### Collect information for return values
