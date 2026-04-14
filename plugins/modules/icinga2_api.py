@@ -706,7 +706,7 @@ def main():
     # Check if either setup or configuration had changes
     module.warn("mode" + str(mode_ret))
     module.warn("config" + str(config_ret))
-    if any(r['changed'] for r in (mode_ret, config_ret)):
+    if any(r['changed'] for r in (mode_ret, config_ret) if 'changed' in r):
         ret['changed'] = True
 
     # Check if either setup or configuration had failures
