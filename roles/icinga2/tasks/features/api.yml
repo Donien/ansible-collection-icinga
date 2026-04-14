@@ -21,7 +21,7 @@
 - name: Check if necessary variables are defined
   ansible.builtin.assert:
     that: ((icinga2_ssl_cacert is defined and icinga2_ssl_cert is defined and icinga2_ssl_key is defined) or (icinga2_ssl_cacert is undefined and icinga2_ssl_cert is undefined and icinga2_ssl_key is undefined and icinga2_parent_host is defined))
-    fail_msg: ca_host is mandatory or ssl_cacert/cert/key have to be set at the same time
+    fail_msg: parent_host is mandatory or ssl_cacert/cert/key have to be set at the same time
     success_msg: API Feature is configured correctly
 
 - name: Api feature cleanup arguments list
@@ -70,7 +70,7 @@
   when: icinga2_parent_host is defined and icinga2_parent_host == 'none'
   netways.icinga.icinga2_api:
     mode: master
-    cn: "{{ icinga2_config_host }}"
+    cn: "{{ icinga2_cert_name }}"
     enable_feature: false
     force_new_ca: "{{ icinga2_force_newca }}"
     force_new_cert: "{{ icinga2_force_newcert }}"
@@ -119,7 +119,7 @@
       when: icinga2_parent_host != 'none'
       netways.icinga.icinga2_api:
         mode: agent
-        cn: "{{ icinga2_config_host }}"
+        cn: "{{ icinga2_cert_name }}"
         host: "{{ icinga2_parent_host }}"
         port: "{{ icinga2_parent_port | default(omit) }}"
         enable_feature: false
@@ -133,17 +133,17 @@
     - not icinga2_ssl_cert_path.stat.exists or not icinga2_ssl_key_path.stat.exists or icinga2_force_newcert
     - icinga2_ssl_cacert is not defined
     - icinga2_delegate_pki | bool
-    - icinga2_ca_host != 'none'
+    - icinga2_parent_host != 'none'
   block:
-    - name: Create private key / cert
+    - name: Ensure directories and private key / cert
       netways.icinga.icinga2_api:
         mode: config
-        cn: "{{ icinga2_config_host }}"
+        cn: "{{ icinga2_cert_name }}"
 
     - name: Fetch CA certificate from delegated host
       ansible.builtin.slurp:
         src: "{{ icinga2_ca_path }}/ca.crt"
-      delegate_to: "{{ icinga2_delegate_host | default(icinga2_ca_host) }}"
+      delegate_to: "{{ icinga2_delegate_host | default(icinga2_parent_host) }}"
       register: _delegated_ca_cert
 
     - name: Save CA certificate
@@ -156,13 +156,8 @@
 
     - name: Delegate ticket request to master
       no_log: "{{ icinga2_no_log | default(icinga_no_log) | default(true) }}"
-      delegate_to: "{{ icinga2_delegate_host | default(icinga2_ca_host) }}"
-      ansible.builtin.command: >
-        icinga2 pki ticket
-            --cn "{{ icinga2_cert_name }}"
-            {% if icinga2_ticket_salt is defined %}
-            --salt "{{ icinga2_ticket_salt }}"
-            {% endif %}
+      delegate_to: "{{ icinga2_delegate_host | default(icinga2_parent_host) }}"
+      ansible.builtin.command: icinga2 pki ticket --cn "{{ icinga2_cert_name }}" {% if icinga2_ticket_salt is defined %} --salt "{{ icinga2_ticket_salt }}"{% endif %}
       register: _icinga2_ticket
 
     - name: Write ticket file
