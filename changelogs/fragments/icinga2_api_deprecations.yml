@@ -3,8 +3,6 @@ deprecated_features:
     Use :code:`parent_host` instead.
   - The use of :code:`ca_host_port` inside the Icinga 2 API feature is deprecated.
     Use :code:`parent_port` instead.
-  - The use of :code:`ca_fingerprint` inside the Icinga 2 API feature is deprecated.
-    Use :code:`parent_fingerprint` instead.
   - |
     The use of :code:`ticket_salt` inside the Icinga 2 API feature is deprecated.
     Use :code:`ticket` instead.

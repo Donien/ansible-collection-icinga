@@ -32,7 +32,7 @@ icinga2_features:
     host: localhost
     port: 3000
   - name: api
-    ca_host: none
+    parent_host: none
     force_newcert: false
     endpoints:
       - name: NodeName

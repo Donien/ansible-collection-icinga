@@ -15,12 +15,6 @@
         The use of 'ca_host_port' in the api feature is deprecated.
         Please use 'parent_port' instead.
 
-    - name: Check if old 'ca_fingerprint' is used in api feature
-      cond: "{{ icinga2_features | selectattr('name', 'eq', 'api') | selectattr('ca_fingerprint', 'defined') | length == 0 }}"
-      msg: |
-        The use of 'ca_fingerprint' in the api feature is deprecated.
-        Please use 'parent_fingerprint' instead.
-
     - name: Check if old 'ticket_salt' is used in api feature
       cond: "{{ icinga2_features | selectattr('name', 'eq', 'api') | selectattr('ticket_salt', 'defined') | length == 0 }}"
       msg: |
